@@ -19,6 +19,7 @@ program
   .argument('<url>', 'YouTube video URL')
   .option('-o, --output <directory>', 'Output directory', './downloads')
   .option('-q, --quality <quality>', 'Video quality (highest/lowest)', 'highest')
+  .option('-a, --audio', 'Download audio only as MP3', false)
   .parse(process.argv);
 
 const options = program.opts();
@@ -102,5 +103,85 @@ async function downloadVideo(videoUrl: string, outputDir: string, quality: strin
   }
 }
 
+async function downloadAudio(videoUrl: string, outputDir: string) {
+  const spinner = ora('Getting audio information...').start();
+  
+  try {
+    // Validate URL
+    if (!ytdl.validateURL(videoUrl)) {
+      spinner.fail('Invalid YouTube URL');
+      process.exit(1);
+    }
+
+    // Create output directory if it doesn't exist
+    if (!fs.existsSync(outputDir)) {
+      fs.mkdirSync(outputDir, { recursive: true });
+    }
+
+    // Get video info with additional options
+    const info = await ytdl.getInfo(videoUrl, {
+      requestOptions: {
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36',
+        }
+      }
+    });
+
+    const videoTitle = info.videoDetails.title.replace(/[^\w\s]/gi, '_');
+    const outputPath = path.join(process.cwd(), outputDir, `${videoTitle}.mp3`);
+
+    spinner.text = 'Starting audio download...';
+
+    // Get the best audio format
+    const formats = ytdl.filterFormats(info.formats, 'audioonly');
+    const format = formats.reduce((prev, curr) => ((prev.bitrate ?? 0) > (curr.bitrate ?? 0) ? prev : curr));
+
+    if (!format) {
+      throw new Error('No suitable audio format found');
+    }
+
+    const stream = ytdl.downloadFromInfo(info, {
+      format: format
+    });
+
+    stream.pipe(fs.createWriteStream(outputPath));
+
+    // Handle download progress
+    let lastPercentage = 0;
+    stream.on('progress', (_, downloaded, total) => {
+      const percentage = Math.floor((downloaded / total) * 100);
+      if (percentage > lastPercentage) {
+        spinner.text = `Downloading audio... ${percentage}%`;
+        lastPercentage = percentage;
+      }
+    });
+
+    // Handle download completion
+    stream.on('end', () => {
+      spinner.succeed(chalk.green(`Audio download completed! Saved to: ${outputPath}`));
+      process.exit(0);
+    });
+
+    // Handle errors
+    stream.on('error', (error) => {
+      spinner.fail(chalk.red(`Audio download failed: ${error.message}`));
+      console.error(chalk.red('Full error:', error));
+      process.exit(1);
+    });
+
+  } catch (error) {
+    spinner.fail(chalk.red('Audio download failed'));
+    if (error instanceof Error) {
+      console.error(chalk.red(`Error details: ${error.message}`));
+      console.error(chalk.red('Full error:', error));
+    }
+    process.exit(1);
+  }
+}
+
 // Execute the download
-downloadVideo(url, options.output, options.quality);
+if (options.audio) {
+  downloadAudio(url, options.output);
+} else {
+  downloadVideo(url, options.output, options.quality);
+}
